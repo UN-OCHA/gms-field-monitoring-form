@@ -29,7 +29,7 @@ It is faster and easier to fill on a phone or tablet in the field: guided steps,
 
 ## Keeping in sync with the GMS template
 
-The app is built around the current OneGMS FSM template. If OneGMS changes the template structure — adding, removing or renaming fields or sections — **the app may need an update** before those changes appear. Test the app against any new template version before using it in the field.
+The app is built around the current OneGMS FSM template. If OneGMS changes the template structure (adding, removing or renaming fields or sections), **the app may need an update** before those changes appear. Test the app against any new template version before using it in the field.
 
 ## Offline and updates
 

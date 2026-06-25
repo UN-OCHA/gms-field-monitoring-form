@@ -150,7 +150,7 @@ function dvFor(sheet,ref){const sd=WB.sheetData[sheet];if(!sd)return null;const 
 
 /* ============================================================ catalog ==== */
 const YN=['Yes','No'];
-/* Mandatory fields — must be filled before moving to the next tab */
+/* Mandatory fields that must be filled before moving to the next tab */
 const REQUIRED=new Set([
   'fld_monitoringType','fld_monitoringStartDate','fld_monitoringEndDate',
   'fld_visitCountry','fld_visitLocation','fld_visitDate','fld_monLeadType',
