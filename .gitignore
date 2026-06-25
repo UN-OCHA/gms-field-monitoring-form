@@ -1,8 +1,7 @@
-# GMS exports contain project & contact data — never publish
+# GMS exports contain project and contact data, never publish
 Monitoring-*.xlsx
 *.xlsx
 # drafts exported from the form
 *-draft.json
-# local tooling
-.claude/
+# local build artifacts
 test-output.*
