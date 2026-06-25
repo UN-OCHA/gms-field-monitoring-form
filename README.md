@@ -50,4 +50,4 @@ On a stylus or touch device you can handwrite into any text box and your device 
 
 ---
 
-Technical design, architecture and maintenance notes are in [DESIGN.md](DESIGN.md).
+Technical design, data model and data flow are in [design/](design/readme.md).
