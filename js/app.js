@@ -65,7 +65,25 @@ async function writeZip(zip, replacements){ // replacements: Map name -> string|
 /* ============================================================ xlsx parse ==== */
 function decXml(s){return s.replace(/&#x([0-9a-fA-F]+);/g,(_,h)=>String.fromCodePoint(parseInt(h,16))).replace(/&#(\d+);/g,(_,d)=>String.fromCodePoint(+d)).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&apos;/g,"'").replace(/&amp;/g,'&')}
 function encXml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+// SpreadsheetML permits namespace prefixes (for example <x:sheet>). The
+// OneGMS exporter is not consistent about whether it includes them.
+function xmlPrefix(xml,root='worksheet'){const m=xml.match(new RegExp('<([A-Za-z_][\\w.-]*:)?'+root+'\\b'));return m&&m[1]||''}
+function canonicalXmlTags(xml){
+  // Use an unprefixed view for parsing. Namespace prefixes are syntactic
+  // aliases, so stripping them here does not change the XML data model.
+  return xml.replace(/<(\/?)(?:[A-Za-z_][\w.-]*:)([A-Za-z_][\w.-]*)\b/g,'<$1$2');
+}
+function canonicalSpreadsheetXml(xml,root='worksheet'){
+  // New cells must use the same XML namespace as their sheet. Convert a
+  // prefixed sheet to the equivalent default-namespace form before editing.
+  const prefix=xmlPrefix(xml,root); if(!prefix)return xml;
+  const p=prefix.slice(0,-1);
+  const rePrefix=p.replace(/[.*+?^$()|[\]\\]/g,'\\$&');
+  return xml.replace(new RegExp('<(/?)'+rePrefix+':','g'),'<$1')
+    .replace(new RegExp('xmlns:'+rePrefix+'='),'xmlns=');
+}
 function colToN(c){let n=0;for(const ch of c)n=n*26+ch.charCodeAt(0)-64;return n}
+function nToCol(n){let c='';while(n){const r=(n-1)%26;c=String.fromCharCode(65+r)+c;n=(n-1-r)/26}return c}
 function splitRef(ref){const m=ref.match(/^([A-Z]+)(\d+)$/);return {col:m[1],colN:colToN(m[1]),row:+m[2]}}
 
 const WB={}; // global workbook model
@@ -80,7 +98,7 @@ async function hashBytes(u8){
 }
 async function parseXlsx(buf, fname){
   const zip=readZip(buf);
-  const wbXml=await zip.getText('xl/workbook.xml');
+  const wbXml=canonicalXmlTags(await zip.getText('xl/workbook.xml'));
   const relsXml=await zip.getText('xl/_rels/workbook.xml.rels');
   const rels={};
   for(const m of relsXml.matchAll(/<Relationship[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g))rels[m[1]]=m[2];
@@ -96,7 +114,7 @@ async function parseXlsx(buf, fname){
     const r=decXml(m[2]).match(/^'?([^'!]+)'?!\$?([A-Z]+)\$?(\d+)/);
     if(r)defined[nm]={sheet:r[1],ref:r[2]+r[3]};
   }
-  const ssXml=await zip.getText('xl/sharedStrings.xml')||'';
+  const ssXml=canonicalXmlTags(await zip.getText('xl/sharedStrings.xml')||'');
   const shared=[];
   for(const m of ssXml.matchAll(/<si>([\s\S]*?)<\/si>/g)){
     let t='';for(const tm of m[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g))t+=decXml(tm[1]);
@@ -104,7 +122,7 @@ async function parseXlsx(buf, fname){
   }
   const sheetData={}; // name -> {cells:{ref:{v,formula,s}}, rows:[rownums], dvs:[{ranges,options,type}], xml}
   for(const sh of sheets){
-    const xml=await zip.getText(sh.file);
+    const xml=canonicalXmlTags(await zip.getText(sh.file));
     const cells={}, rows=[];
     for(const rm of xml.matchAll(/<row r="(\d+)"[^>]*>([\s\S]*?)<\/row>/g)){
       rows.push(+rm[1]);
@@ -122,13 +140,14 @@ async function parseXlsx(buf, fname){
     const dvs=[];
     for(const dm of xml.matchAll(/<dataValidation\b([^>]*?)(?:\/>|>([\s\S]*?)<\/dataValidation>)/g)){
       const a=dm[1], body=dm[2]||'';
-      const sqref=(a.match(/sqref="([^"]+)"/)||[])[1]; if(!sqref)continue;
+      const sqref=(a.match(/sqref="([^"]+)"/)||[])[1]||(body.match(/<sqref[^>]*>([^<]+)<\/sqref>/)||[])[1]; if(!sqref)continue;
       const type=(a.match(/type="(\w+)"/)||[])[1]||'';
       let options=null;
       const f1=body.match(/<formula1>([\s\S]*?)<\/formula1>/);
       if(type==='list'&&f1){
-        const f=decXml(f1[1]).trim();
+        const f=decXml(f1[1]).replace(/<[^>]+>/g,'').trim();
         if(/^".*"$/s.test(f))options=f.slice(1,-1).split(',').map(s=>s.trim()).filter(Boolean);
+        else options={formula:f};
       }
       const ranges=sqref.split(' ').map(r=>{
         const p=r.split(':'), a1=splitRef(p[0]), a2=splitRef(p[1]||p[0]);
@@ -137,6 +156,21 @@ async function parseXlsx(buf, fname){
       dvs.push({ranges,options,type});
     }
     sheetData[sh.name]={cells,rows,dvs,file:sh.file};
+  }
+  for(const sd of Object.values(sheetData))for(const dv of sd.dvs){
+    if(!dv.options||!dv.options.formula)continue;
+    const f=dv.options.formula.replace(/^=/,'');
+    const named=defined[f];
+    const m=(named?"'"+named.sheet+"'!"+named.ref:f).match(/^'?([^'!]+)'?!\$?([A-Z]+)\$?(\d+)(?::\$?([A-Z]+)\$?(\d+))?$/);
+    if(!m){dv.options=[];continue;}
+    const source=sheetData[m[1]], c1=colToN(m[2]), r1=+m[3], c2=colToN(m[4]||m[2]), r2=+(m[5]||m[3]);
+    if(!source){dv.options=[];continue;}
+    const values=[];
+    for(let row=r1;row<=r2;row++)for(let col=c1;col<=c2;col++){
+      const value=source.cells[nToCol(col)+row]?.v;
+      if(value!=null&&String(value).trim()!=='')values.push(String(value).trim());
+    }
+    dv.options=values;
   }
   Object.assign(WB,{zip,fname,sheets,defined,sheetData});
 }
@@ -442,6 +476,7 @@ function el(tag,attrs,html){const e=document.createElement(tag);if(attrs)for(con
 function uiModal(o){
   return new Promise(resolve=>{
     const ov=el('div',{class:'modal-ov'}),box=el('div',{class:'modal'});
+    if(o.wide)box.classList.add('modal-wide');
     if(o.title)box.appendChild(el('div',{class:'modal-t'},encXml(o.title)));
     if(o.message){const m=el('div',{class:'modal-m'});m.textContent=o.message;box.appendChild(m);}
     let input=null;
@@ -470,12 +505,14 @@ const uiAlert=(message,o)=>uiModal(Object.assign({message,cancelText:null,okText
 let RCTX={si:0,gi:0}; // section/step context during render
 function registerInput(container,{key,sheet,ref,type,label,options,ph,pre,rubric}){
   const orig=cellV(sheet,ref);
-  const req=REQUIRED.has(key);
+  const templateOptions=type==='select'&&!options?(dvFor(sheet,ref)?.options||[]):(options||[]);
+  const noCountryList=key==='fld_visitCountry'&&type==='select'&&!templateOptions.length;
+  const req=REQUIRED.has(key)&&!noCountryList;
   const it={key,sheet,ref,type,label,orig,req,si:RCTX.si,gi:RCTX.gi};
   inputsIndex.push(it);
   const wrap=el('div',{class:'fld'+(req?' req':'')});
   it.wrap=wrap;
-  const lab=el('label',null,encXml(label)+(pre?'<span class="pre">pre-filled from GMS</span>':''));
+  const lab=el('label',null,encXml(label)+(pre?'<span class="pre">pre-filled from GMS</span>':'')+(noCountryList?'<span class="pre">list unavailable — optional</span>':''));
   wrap.appendChild(lab);
   let input;
   const cur=key in state?state[key]:origValueFor(it);
@@ -503,7 +540,7 @@ function registerInput(container,{key,sheet,ref,type,label,options,ph,pre,rubric
     input=el('select');
     input.appendChild(el('option',{value:''},'Select…'));
     let opts=options;
-    if(!opts){const dv=dvFor(sheet,ref);opts=dv&&dv.options||[]}
+    if(!opts)opts=templateOptions;
     const seen=new Set();
     for(const o of opts){input.appendChild(el('option',{value:o},encXml(o)));seen.add(o)}
     if(cur&&!seen.has(cur))input.appendChild(el('option',{value:cur},encXml(cur)));
@@ -529,7 +566,11 @@ function registerInput(container,{key,sheet,ref,type,label,options,ph,pre,rubric
     const row=el('div',{class:'score-row'});
     row.appendChild(input);
     const rub=rubricText(sheet,ref);
-    if(rub){const det=el('details',null,'<summary>Scoring rubric</summary>');det.appendChild(el('pre',null,encXml(rub)));row.appendChild(det)}
+    if(rub){
+      const btn=el('button',{type:'button',class:'btn sm ghost rubric-btn','aria-haspopup':'dialog'},'View scoring rubric');
+      btn.addEventListener('click',()=>uiAlert(rub,{title:'Scoring rubric — '+label,okText:'Close',wide:true}));
+      row.appendChild(btn);
+    }
     wrap.appendChild(row);
   }else wrap.appendChild(input);
   container.appendChild(wrap);
@@ -604,7 +645,13 @@ function renderTable(container,tbl,kind){
 }
 
 let TABLES=null, CUR=0;
+const RESUME_KEY='gmsfm:resume-form';
 const stepPos={}, visited={};
+function rememberFormPosition(section,step){
+  if(!CURPROJ||!CURLOC||CURLOC.consolidated)return;
+  CURLOC.formPosition={section,step};
+  try{localStorage.setItem(RESUME_KEY,JSON.stringify({projectKey:CURPROJ.projectKey,locationId:CURLOC.id,section,step}));}catch(e){}
+}
 function isFilled(it){const v=it.key in state?state[it.key]:origValueFor(it);return String(v).trim()!==''}
 function missingRequired(si){return inputsIndex.filter(it=>it.req&&(si==null||it.si===si)&&!isFilled(it))}
 function stepMissing(si,gi){return inputsIndex.filter(it=>it.req&&it.si===si&&it.gi===gi&&!isFilled(it))}
@@ -668,8 +715,11 @@ function renderForm(){
     });
     main.appendChild(panel);
   });
-  CUR=0;
-  activateTab(0);showStep(0,0);
+  const saved=CURLOC&&CURLOC.formPosition||{};
+  const section=Number.isInteger(saved.section)&&CATALOG[saved.section]?saved.section:0;
+  const step=Number.isInteger(saved.step)&&saved.step>=0&&saved.step<CATALOG[section].groups.length?saved.step:0;
+  CUR=section;
+  activateTab(section);showStep(section,step);
   $('#landing').classList.add('hidden');
   $('#records').classList.add('hidden');
   $('#project').classList.add('hidden');
@@ -714,6 +764,7 @@ function flagMissing(si,miss){
 }
 function showStep(si,gi){
   stepPos[si]=gi;(visited[si]=visited[si]||new Set()).add(gi);
+  rememberFormPosition(si,gi);
   const panel=document.getElementById('panel-'+si);if(!panel)return;
   panel.querySelectorAll(':scope > .step').forEach((st,j)=>st.classList.toggle('hidden',j!==gi));
   updateStepper(si);
@@ -793,6 +844,7 @@ function onStateChange(){
 /* ============================================================ generate ==== */
 function escT(s){return encXml(String(s).replace(/\r\n?/g,'\n'))}
 function setCellInXml(xml,ref,val,numeric){
+  xml=canonicalSpreadsheetXml(xml);
   const {colN,row}=splitRef(ref);
   const cellRe=new RegExp('<c r="'+ref+'"[^>]*?(?:/>|>[\\s\\S]*?</c>)');
   const m=xml.match(cellRe);
@@ -824,6 +876,7 @@ function setCellInXml(xml,ref,val,numeric){
   return xml.replace('</sheetData>',rowXml+'</sheetData>');
 }
 function ensureFullCalc(wbXml){
+  wbXml=canonicalSpreadsheetXml(wbXml,'workbook');
   if(/fullCalcOnLoad=/.test(wbXml))return wbXml;
   if(/<calcPr\b/.test(wbXml))return wbXml.replace(/<calcPr\b/,'<calcPr fullCalcOnLoad="1"');
   if(/<\/definedNames>/.test(wbXml))return wbXml.replace('</definedNames>','</definedNames><calcPr calcId="191029" fullCalcOnLoad="1"/>');
@@ -973,7 +1026,11 @@ async function addLocation(){
   await Store.putLocation(loc);
   renderProjectView();
 }
-function backFromForm(){flushDraft();if(CURPROJ&&CURPROJ.mode==='multi')enterProjectView();else showHome();}
+function backFromForm(){
+  flushDraft();
+  try{localStorage.removeItem(RESUME_KEY)}catch(e){}
+  if(CURPROJ&&CURPROJ.mode==='multi')enterProjectView();else showHome();
+}
 // platform-aware handwriting guidance (shown when the pen marker is tapped)
 function handwritingGuidanceText(){
   const ua=navigator.userAgent;
@@ -1091,6 +1148,19 @@ async function showHome(){
   await renderRecords();
   $('#records').classList.remove('hidden');
   window.scrollTo(0,0);
+}
+async function resumeLastForm(){
+  let resume;try{resume=JSON.parse(localStorage.getItem(RESUME_KEY)||'null')}catch(e){}
+  if(!resume||!resume.projectKey||!resume.locationId)return false;
+  const proj=await Store.getProject(resume.projectKey);if(!proj)return false;
+  const locs=await Store.listLocations(proj.projectKey);
+  const loc=locs.find(l=>l.id===resume.locationId);if(!loc)return false;
+  if(Number.isInteger(resume.section)&&Number.isInteger(resume.step))loc.formPosition={section:resume.section,step:resume.step};
+  await parseXlsx(toAB(proj.templateBytes),proj.filename||'template.xlsx');
+  CURPROJ=proj;CURLOC=loc;state=Object.assign({},loc.formState||{});
+  renderForm();
+  notice('info','Resumed your saved report at the last step you were working on.');
+  return true;
 }
 async function showLanding(){
   hideAll();
@@ -1236,7 +1306,7 @@ if('serviceWorker' in navigator&&location.protocol!=='file:'){
 (async function(){
   try{await Store.open();Store.persist();
     const projects=await Store.listProjects();
-    if(projects.length)await showHome();
+    if(projects.length&&!(await resumeLastForm()))await showHome();
   }catch(e){console.error(e);}
 })();
 

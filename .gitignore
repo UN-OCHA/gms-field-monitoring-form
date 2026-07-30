@@ -5,3 +5,5 @@ Monitoring-*.xlsx
 *-draft.json
 # local build artifacts
 test-output.*
+# VS Code workspace settings
+.vscode/
