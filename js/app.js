@@ -255,10 +255,12 @@ const CATALOG=[
     F('fld_prevMonType_2','Previous monitoring 2: type','select',{o:['Internal Monitoring','Third party','Peer to Peer','Remote monitoring','Financial Spot Check','Ad hoc','Other']}),
     F('fld_prevMonLocation_2','Previous monitoring 2: location'),
     F('fld_prevMonDate_2','Previous monitoring 2: date','date'),
+    // the template names the third row's Type cell fld_prevMonTypeSpec; fld_prevMonType_3 is kept for
+    // older/renamed exports. Only the one the loaded template defines is rendered.
     F('fld_prevMonType_3','Previous monitoring 3: type','select',{o:['Internal Monitoring','Third party','Peer to Peer','Remote monitoring','Financial Spot Check','Ad hoc','Other']}),
+    F('fld_prevMonTypeSpec','Previous monitoring 3: type','select',{o:['Internal Monitoring','Third party','Peer to Peer','Remote monitoring','Financial Spot Check','Ad hoc','Other']}),
     F('fld_prevMonLocation_3','Previous monitoring 3: location'),
     F('fld_prevMonDate_3','Previous monitoring 3: date','date'),
-    F('fld_prevMonTypeSpec','If "Other", specify'),
     F('fld_summaryFindings','Summary of key findings from previous monitoring','textarea'),
   ]},
  ]},
@@ -378,6 +380,9 @@ const CATALOG=[
     F('fld_oa_narrative','Summary of how the project contributed to the corresponding allocation priorities','textarea'),
   ]},
   {h:'5.2 Practices and lessons observed',fields:[
+    // GMS renamed this cell from fld_oa_visibility to fld_oa_lessons; both are listed so either
+    // template version renders. Only the name the loaded template defines is shown.
+    F('fld_oa_lessons','Key lessons learned and good practices from the monitored project','textarea'),
     F('fld_oa_visibility','Key lessons learned and good practices from the monitored project','textarea'),
   ]},
   {h:'5.3 Visibility of CBPF-funded projects',desc:'Weblinks to public posts/articles showing fund visibility.',fields:[
@@ -1125,7 +1130,17 @@ function aggregateLocations(locs){
     }else if(t==='select'||t==='date'||t==='daterange'){
       out[key]=vals[0].v;
     }else{
-      out[key]=vals.map(x=>x.name+'_: '+x.v).join('\n');
+      // Label each contribution with its location, except where the value is the location name
+      // itself (1.1.5 Location name), which would read "Yumbe: Yumbe". Single-line fields join
+      // with a comma; multi-line fields keep one entry per line.
+      const seen=new Set(),parts=[];
+      for(const x of vals){
+        const v=String(x.v).trim(),n=String(x.name).trim();
+        const s=(v===n)?v:n+': '+v;
+        if(seen.has(s))continue;
+        seen.add(s);parts.push(s);
+      }
+      out[key]=parts.join(t==='textarea'?'\n':', ');
     }
   }
   return out;

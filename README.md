@@ -35,6 +35,10 @@ The app is built around the current OneGMS FSM template. If OneGMS changes the t
 
 After the first online visit the app works with **no connection at all**, survives closed tabs and device restarts, and can be added to the home screen so it opens like an app. When a new version is published, it applies automatically the next time you open the app online.
 
+## Deployments
+
+GitHub Actions deploys every push to `main` to GitHub Pages. During deployment it stamps the service-worker cache with the commit SHA, so each deployment has a distinct offline-cache version and users receive the new assets automatically on their next online visit. In the repository's **Settings → Pages**, set the publishing source to **GitHub Actions** once to enable this workflow.
+
 ## Privacy and data
 
 Everything happens in your browser: no server, no analytics, and nothing is sent anywhere. Your entries are kept only on the device until you upload the generated Excel to OneGMS yourself. On a shared computer, use **Discard draft** when you finish.

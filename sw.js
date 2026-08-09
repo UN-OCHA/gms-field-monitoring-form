@@ -6,8 +6,9 @@
      cache instantly, refreshed in the background on every online visit.
    - Browsers re-check this file on each navigation; a changed CACHE version
      installs the new worker, which deletes all older caches on activation.
-     Bump CACHE only when the precache list itself changes. */
-const CACHE = 'gms-fsm-v18';
+     The deployment workflow replaces __DEPLOY_VERSION__ with the commit SHA,
+     so every deployment activates a distinct cache automatically. */
+const CACHE = 'gms-fsm-__DEPLOY_VERSION__';
 const PRECACHE = [
   './',
   'index.html',
